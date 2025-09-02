@@ -5,6 +5,7 @@ import 'dart:math' as math;
 
 import '../db/app_db.dart' as db;
 import '../widgets/modern_loading.dart';
+import '../widgets/modern_feedback.dart';
 
 class DataAnalysisScreen extends StatefulWidget {
   final int projectId;
@@ -67,7 +68,10 @@ class _DataAnalysisScreenState extends State<DataAnalysisScreen>
 
   Future<void> _loadData() async {
     try {
-      setState(() => _loading = true);
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
       
       final points = await widget.database.listPoints(widget.projectId);
       
@@ -86,6 +90,10 @@ class _DataAnalysisScreenState extends State<DataAnalysisScreen>
         _error = e.toString();
         _loading = false;
       });
+      
+      if (mounted) {
+        ModernFeedback.showError(context, 'Failed to load analysis data');
+      }
     }
   }
 
@@ -152,6 +160,18 @@ class _DataAnalysisScreenState extends State<DataAnalysisScreen>
               foregroundColor: theme.colorScheme.onPrimary,
               expandedHeight: 200,
               pinned: true,
+              actions: [
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  onPressed: _loadData,
+                  tooltip: 'Refresh Analysis',
+                ),
+                IconButton(
+                  icon: const Icon(Icons.share),
+                  onPressed: () => _exportAnalysisReport(),
+                  tooltip: 'Export Report',
+                ),
+              ],
               flexibleSpace: FlexibleSpaceBar(
                 background: Container(
                   decoration: BoxDecoration(
@@ -160,9 +180,7 @@ class _DataAnalysisScreenState extends State<DataAnalysisScreen>
                       end: Alignment.bottomRight,
                       colors: [
                         theme.colorScheme.primary,
-                        theme.colorScheme.primary.withGreen(
-                          (theme.colorScheme.primary.green * 1.2).clamp(0, 255).round(),
-                        ),
+                        theme.colorScheme.primary.withOpacity(0.8),
                       ],
                     ),
                   ),
@@ -206,10 +224,15 @@ class _DataAnalysisScreenState extends State<DataAnalysisScreen>
                     onRetry: _loadData,
                   )
                 : _points.isEmpty
-                    ? const ModernEmptyState(
+                    ? ModernEmptyState(
                         title: 'No Data Yet',
                         subtitle: 'Start recording survey points to see analysis',
                         icon: Icons.analytics,
+                        action: FilledButton.icon(
+                          icon: const Icon(Icons.arrow_back),
+                          label: const Text('Back to Survey'),
+                          onPressed: () => Navigator.of(context).pop(),
+                        ),
                       )
                     : SlideTransition(
                         position: _slideAnimation,
@@ -316,13 +339,15 @@ class _DataAnalysisScreenState extends State<DataAnalysisScreen>
                   value: _minField,
                   progress: 0.0,
                   color: Colors.blue,
+                  theme: theme,
                 ),
                 const SizedBox(height: 12),
                 _FieldStrengthBar(
                   label: 'Average',
                   value: _avgField,
-                  progress: (_avgField - _minField) / (_maxField - _minField),
+                  progress: (_maxField - _minField) > 0 ? (_avgField - _minField) / (_maxField - _minField) : 0.5,
                   color: Colors.green,
+                  theme: theme,
                 ),
                 const SizedBox(height: 12),
                 _FieldStrengthBar(
@@ -330,6 +355,7 @@ class _DataAnalysisScreenState extends State<DataAnalysisScreen>
                   value: _maxField,
                   progress: 1.0,
                   color: Colors.red,
+                  theme: theme,
                 ),
               ],
             ),
@@ -358,13 +384,14 @@ class _DataAnalysisScreenState extends State<DataAnalysisScreen>
           _StatCard(
             title: 'Descriptive Statistics',
             icon: Icons.calculate,
+            theme: theme,
             children: [
-              _StatRow('Mean', '${_avgField.toStringAsFixed(2)} µT'),
-              _StatRow('Standard Deviation', '${_stdDev.toStringAsFixed(2)} µT'),
-              _StatRow('Minimum', '${_minField.toStringAsFixed(2)} µT'),
-              _StatRow('Maximum', '${_maxField.toStringAsFixed(2)} µT'),
-              _StatRow('Range', '${(_maxField - _minField).toStringAsFixed(2)} µT'),
-              _StatRow('Coefficient of Variation', '${((_stdDev / _avgField) * 100).toStringAsFixed(1)}%'),
+              _StatRow('Mean', '${_avgField.toStringAsFixed(2)} µT', theme),
+              _StatRow('Standard Deviation', '${_stdDev.toStringAsFixed(2)} µT', theme),
+              _StatRow('Minimum', '${_minField.toStringAsFixed(2)} µT', theme),
+              _StatRow('Maximum', '${_maxField.toStringAsFixed(2)} µT', theme),
+              _StatRow('Range', '${(_maxField - _minField).toStringAsFixed(2)} µT', theme),
+              _StatRow('Coefficient of Variation', _avgField > 0 ? '${((_stdDev / _avgField) * 100).toStringAsFixed(1)}%' : 'N/A', theme),
             ],
           ),
           
@@ -374,17 +401,18 @@ class _DataAnalysisScreenState extends State<DataAnalysisScreen>
           _StatCard(
             title: 'Spatial Metrics',
             icon: Icons.map,
+            theme: theme,
             children: [
-              _StatRow('Total Points', '$_totalPoints'),
+              _StatRow('Total Points', '$_totalPoints', theme),
               _StatRow('Survey Distance', _surveyDistance > 1000 
                 ? '${(_surveyDistance / 1000).toStringAsFixed(2)} km'
-                : '${_surveyDistance.toStringAsFixed(0)} m'),
+                : '${_surveyDistance.toStringAsFixed(0)} m', theme),
               _StatRow('Point Density', _surveyDistance > 0 
                 ? '${(_totalPoints / (_surveyDistance / 1000)).toStringAsFixed(1)} pts/km'
-                : 'N/A'),
+                : 'N/A', theme),
               _StatRow('Average Spacing', _totalPoints > 1 
                 ? '${(_surveyDistance / (_totalPoints - 1)).toStringAsFixed(1)} m'
-                : 'N/A'),
+                : 'N/A', theme),
             ],
           ),
           
@@ -394,18 +422,34 @@ class _DataAnalysisScreenState extends State<DataAnalysisScreen>
           _StatCard(
             title: 'Temporal Metrics',
             icon: Icons.schedule,
+            theme: theme,
             children: [
-              _StatRow('Survey Duration', _formatDuration(_surveyDuration)),
+              _StatRow('Survey Duration', _formatDuration(_surveyDuration), theme),
               _StatRow('Recording Rate', _surveyDuration.inSeconds > 0 
                 ? '${(_totalPoints / (_surveyDuration.inSeconds / 60)).toStringAsFixed(1)} pts/min'
-                : 'N/A'),
+                : 'N/A', theme),
               _StatRow('Start Time', _points.isNotEmpty 
                 ? _formatDateTime(_points.first.ts)
-                : 'N/A'),
+                : 'N/A', theme),
               _StatRow('End Time', _points.isNotEmpty 
                 ? _formatDateTime(_points.last.ts)
-                : 'N/A'),
+                : 'N/A', theme),
             ],
+          ),
+          
+          const SizedBox(height: 20),
+          
+          // Export analysis button
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              icon: const Icon(Icons.file_download),
+              label: const Text('Export Analysis Report'),
+              onPressed: _exportAnalysisReport,
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+            ),
           ),
         ],
       ),
@@ -423,7 +467,8 @@ class _DataAnalysisScreenState extends State<DataAnalysisScreen>
           _VisualizationCard(
             title: 'Field Strength Distribution',
             icon: Icons.bar_chart,
-            child: _FieldHistogram(points: _points),
+            theme: theme,
+            child: _FieldHistogram(points: _points, theme: theme),
           ),
           
           const SizedBox(height: 20),
@@ -432,7 +477,18 @@ class _DataAnalysisScreenState extends State<DataAnalysisScreen>
           _VisualizationCard(
             title: 'Field vs Time',
             icon: Icons.timeline,
-            child: _TimeSeriesChart(points: _points),
+            theme: theme,
+            child: _TimeSeriesChart(points: _points, theme: theme),
+          ),
+          
+          const SizedBox(height: 20),
+          
+          // Component analysis
+          _VisualizationCard(
+            title: 'Magnetic Components',
+            icon: Icons.analytics,
+            theme: theme,
+            child: _ComponentAnalysis(points: _points, theme: theme),
           ),
           
           const SizedBox(height: 20),
@@ -441,11 +497,48 @@ class _DataAnalysisScreenState extends State<DataAnalysisScreen>
           _VisualizationCard(
             title: 'Spatial Distribution',
             icon: Icons.scatter_plot,
-            child: _SpatialView(points: _points),
+            theme: theme,
+            child: _SpatialView(points: _points, theme: theme),
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _exportAnalysisReport() async {
+    try {
+      final report = _generateAnalysisReport();
+      
+      await Clipboard.setData(ClipboardData(text: report));
+      ModernFeedback.showSuccess(context, 'Analysis report copied to clipboard');
+      
+    } catch (e) {
+      ModernFeedback.showError(context, 'Failed to export report: $e');
+    }
+  }
+
+  String _generateAnalysisReport() {
+    final buffer = StringBuffer();
+    buffer.writeln('# GeoMag Survey Analysis Report');
+    buffer.writeln('Project ID: ${widget.projectId}');
+    buffer.writeln('Generated: ${DateTime.now().toIso8601String()}');
+    buffer.writeln();
+    buffer.writeln('## Summary');
+    buffer.writeln('- Total Points: $_totalPoints');
+    buffer.writeln('- Survey Distance: ${_surveyDistance > 1000 ? "${(_surveyDistance / 1000).toStringAsFixed(2)} km" : "${_surveyDistance.toStringAsFixed(0)} m"}');
+    buffer.writeln('- Duration: ${_formatDuration(_surveyDuration)}');
+    buffer.writeln();
+    buffer.writeln('## Field Statistics');
+    buffer.writeln('- Mean: ${_avgField.toStringAsFixed(2)} µT');
+    buffer.writeln('- Standard Deviation: ${_stdDev.toStringAsFixed(2)} µT');
+    buffer.writeln('- Minimum: ${_minField.toStringAsFixed(2)} µT');
+    buffer.writeln('- Maximum: ${_maxField.toStringAsFixed(2)} µT');
+    buffer.writeln('- Range: ${(_maxField - _minField).toStringAsFixed(2)} µT');
+    if (_avgField > 0) {
+      buffer.writeln('- CV: ${((_stdDev / _avgField) * 100).toStringAsFixed(1)}%');
+    }
+    
+    return buffer.toString();
   }
 
   String _formatDuration(Duration duration) {
@@ -472,18 +565,18 @@ class _FieldStrengthBar extends StatelessWidget {
   final double value;
   final double progress;
   final Color color;
+  final ThemeData theme;
 
   const _FieldStrengthBar({
     required this.label,
     required this.value,
     required this.progress,
     required this.color,
+    required this.theme,
   });
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    
     return Column(
       children: [
         Row(
@@ -549,6 +642,7 @@ class _QualityMetricsCard extends StatelessWidget {
     final highAccuracy = points.where((p) => p.accuracyM != null && p.accuracyM! <= 5).length;
     final mediumAccuracy = points.where((p) => p.accuracyM != null && p.accuracyM! > 5 && p.accuracyM! <= 10).length;
     final lowAccuracy = points.where((p) => p.accuracyM != null && p.accuracyM! > 10).length;
+    final noAccuracy = points.where((p) => p.accuracyM == null).length;
     final total = points.length;
 
     return Container(
@@ -586,6 +680,7 @@ class _QualityMetricsCard extends StatelessWidget {
               count: highAccuracy,
               total: total,
               color: Colors.green,
+              theme: theme,
             ),
             const SizedBox(height: 12),
             _QualityBar(
@@ -593,6 +688,7 @@ class _QualityMetricsCard extends StatelessWidget {
               count: mediumAccuracy,
               total: total,
               color: Colors.orange,
+              theme: theme,
             ),
             const SizedBox(height: 12),
             _QualityBar(
@@ -600,10 +696,21 @@ class _QualityMetricsCard extends StatelessWidget {
               count: lowAccuracy,
               total: total,
               color: Colors.red,
+              theme: theme,
             ),
+            if (noAccuracy > 0) ...[
+              const SizedBox(height: 12),
+              _QualityBar(
+                label: 'No Accuracy Data',
+                count: noAccuracy,
+                total: total,
+                color: Colors.grey,
+                theme: theme,
+              ),
+            ],
           ] else
             Text(
-              'No accuracy data available',
+              'No data available',
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -619,12 +726,14 @@ class _QualityBar extends StatelessWidget {
   final int count;
   final int total;
   final Color color;
+  final ThemeData theme;
 
   const _QualityBar({
     required this.label,
     required this.count,
     required this.total,
     required this.color,
+    required this.theme,
   });
 
   @override
@@ -638,9 +747,8 @@ class _QualityBar extends StatelessWidget {
           children: [
             Text(
               label,
-              style: const TextStyle(
+              style: theme.textTheme.bodyMedium?.copyWith(
                 fontWeight: FontWeight.w500,
-                fontSize: 14,
               ),
             ),
             Text(
@@ -680,17 +788,17 @@ class _StatCard extends StatelessWidget {
   final String title;
   final IconData icon;
   final List<Widget> children;
+  final ThemeData theme;
 
   const _StatCard({
     required this.title,
     required this.icon,
     required this.children,
+    required this.theme,
   });
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -726,13 +834,12 @@ class _StatCard extends StatelessWidget {
 class _StatRow extends StatelessWidget {
   final String label;
   final String value;
+  final ThemeData theme;
 
-  const _StatRow(this.label, this.value);
+  const _StatRow(this.label, this.value, this.theme);
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
@@ -760,17 +867,17 @@ class _VisualizationCard extends StatelessWidget {
   final String title;
   final IconData icon;
   final Widget child;
+  final ThemeData theme;
 
   const _VisualizationCard({
     required this.title,
     required this.icon,
     required this.child,
+    required this.theme,
   });
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -803,19 +910,26 @@ class _VisualizationCard extends StatelessWidget {
   }
 }
 
-// Simple visualization widgets (you could enhance these with a charting library)
+// Visualization widgets
 class _FieldHistogram extends StatelessWidget {
   final List<db.Point> points;
+  final ThemeData theme;
 
-  const _FieldHistogram({required this.points});
+  const _FieldHistogram({required this.points, required this.theme});
 
   @override
   Widget build(BuildContext context) {
     if (points.isEmpty) {
-      return const Center(child: Text('No data to display'));
+      return Center(
+        child: Text(
+          'No data to display',
+          style: theme.textTheme.bodyLarge?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      );
     }
 
-    final theme = Theme.of(context);
     final fields = points.map((p) => p.totalField).toList();
     final minField = fields.reduce(math.min);
     final maxField = fields.reduce(math.max);
@@ -826,11 +940,13 @@ class _FieldHistogram extends StatelessWidget {
     final bins = List.filled(binCount, 0);
     
     for (final field in fields) {
-      final binIndex = ((field - minField) / binWidth).floor().clamp(0, binCount - 1);
+      final binIndex = binWidth > 0 
+          ? ((field - minField) / binWidth).floor().clamp(0, binCount - 1)
+          : 0;
       bins[binIndex]++;
     }
     
-    final maxBinValue = bins.reduce(math.max);
+    final maxBinValue = bins.isNotEmpty ? bins.reduce(math.max) : 1;
     
     return Column(
       children: [
@@ -864,7 +980,7 @@ class _FieldHistogram extends StatelessWidget {
                       const SizedBox(height: 4),
                       Text(
                         '${entry.value}',
-                        style: const TextStyle(fontSize: 10),
+                        style: theme.textTheme.labelSmall,
                       ),
                     ],
                   ),
@@ -894,16 +1010,23 @@ class _FieldHistogram extends StatelessWidget {
 
 class _TimeSeriesChart extends StatelessWidget {
   final List<db.Point> points;
+  final ThemeData theme;
 
-  const _TimeSeriesChart({required this.points});
+  const _TimeSeriesChart({required this.points, required this.theme});
 
   @override
   Widget build(BuildContext context) {
     if (points.isEmpty) {
-      return const Center(child: Text('No data to display'));
+      return Center(
+        child: Text(
+          'No data to display',
+          style: theme.textTheme.bodyLarge?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      );
     }
 
-    final theme = Theme.of(context);
     final minField = points.map((p) => p.totalField).reduce(math.min);
     final maxField = points.map((p) => p.totalField).reduce(math.max);
     
@@ -981,19 +1104,166 @@ class _TimeSeriesPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-class _SpatialView extends StatelessWidget {
+class _ComponentAnalysis extends StatelessWidget {
   final List<db.Point> points;
+  final ThemeData theme;
 
-  const _SpatialView({required this.points});
+  const _ComponentAnalysis({required this.points, required this.theme});
 
   @override
   Widget build(BuildContext context) {
     if (points.isEmpty) {
-      return const Center(child: Text('No spatial data to display'));
+      return Center(
+        child: Text(
+          'No component data to display',
+          style: theme.textTheme.bodyLarge?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      );
     }
 
-    final theme = Theme.of(context);
-    
+    final xValues = points.map((p) => p.magneticX).toList();
+    final yValues = points.map((p) => p.magneticY).toList();
+    final zValues = points.map((p) => p.magneticZ).toList();
+
+    final xAvg = xValues.reduce((a, b) => a + b) / xValues.length;
+    final yAvg = yValues.reduce((a, b) => a + b) / yValues.length;
+    final zAvg = zValues.reduce((a, b) => a + b) / zValues.length;
+
+    return Column(
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: _ComponentBar(
+                label: 'X-Component',
+                value: xAvg,
+                color: Colors.red,
+                theme: theme,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _ComponentBar(
+                label: 'Y-Component',
+                value: yAvg,
+                color: Colors.green,
+                theme: theme,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _ComponentBar(
+                label: 'Z-Component',
+                value: zAvg,
+                color: Colors.blue,
+                theme: theme,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.primaryContainer.withOpacity(0.5),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                Icons.info_outline,
+                color: theme.colorScheme.onPrimaryContainer,
+                size: 16,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Average magnetic field components across all measurements',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onPrimaryContainer,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ComponentBar extends StatelessWidget {
+  final String label;
+  final double value;
+  final Color color;
+  final ThemeData theme;
+
+  const _ComponentBar({
+    required this.label,
+    required this.value,
+    required this.color,
+    required this.theme,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.3)),
+      ),
+      child: Column(
+        children: [
+          Text(
+            label,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: color,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '${value.toStringAsFixed(1)}',
+            style: theme.textTheme.titleLarge?.copyWith(
+              color: color,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          Text(
+            'µT',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: color.withOpacity(0.8),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SpatialView extends StatelessWidget {
+  final List<db.Point> points;
+  final ThemeData theme;
+
+  const _SpatialView({required this.points, required this.theme});
+
+  @override
+  Widget build(BuildContext context) {
+    if (points.isEmpty) {
+      return Center(
+        child: Text(
+          'No spatial data to display',
+          style: theme.textTheme.bodyLarge?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      );
+    }
+
     return Container(
       height: 200,
       decoration: BoxDecoration(
@@ -1030,102 +1300,27 @@ class _SpatialView extends StatelessWidget {
                 color: theme.colorScheme.primaryContainer,
                 borderRadius: BorderRadius.circular(20),
               ),
-              child: Text(
-                'View on Map',
-                style: TextStyle(
-                  color: theme.colorScheme.onPrimaryContainer,
-                  fontWeight: FontWeight.w600,
-                ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.map,
+                    size: 16,
+                    color: theme.colorScheme.onPrimaryContainer,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'View on Map',
+                    style: TextStyle(
+                      color: theme.colorScheme.onPrimaryContainer,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-// Export the modern stats card for reuse
-class ModernStatsCard extends StatelessWidget {
-  final String title;
-  final String value;
-  final String subtitle;
-  final IconData icon;
-  final Color color;
-
-  const ModernStatsCard({
-    super.key,
-    required this.title,
-    required this.value,
-    required this.subtitle,
-    required this.icon,
-    required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            color.withOpacity(0.1),
-            color.withOpacity(0.05),
-          ],
-        ),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: color.withOpacity(0.2),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: color.withOpacity(0.2),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Icon(
-                  icon,
-                  color: color,
-                  size: 20,
-                ),
-              ),
-              const Spacer(),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            title,
-            style: theme.textTheme.labelMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            value,
-            style: theme.textTheme.headlineMedium?.copyWith(
-              fontWeight: FontWeight.w700,
-              color: color,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            subtitle,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ],
       ),
     );
   }

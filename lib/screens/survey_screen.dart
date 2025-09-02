@@ -14,6 +14,9 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import '../db/app_db.dart' as db;
 import '../services/magnetometer_service.dart';
 import '../services/export_service.dart';
+import '../widgets/modern_feedback.dart';
+import '../widgets/modern_loading.dart';
+import 'data_analysis_screen.dart';
 
 class SurveyScreen extends StatefulWidget {
   final int projectId;
@@ -77,6 +80,9 @@ class _SurveyScreenState extends State<SurveyScreen> {
   // Export service
   late final ExportService _exporter;
 
+  // Point counter for UI
+  int _pointCount = 0;
+
   @override
   void initState() {
     super.initState();
@@ -118,14 +124,29 @@ class _SurveyScreenState extends State<SurveyScreen> {
   // ------- Location stream -------
   Future<void> _initLocation() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) return;
+    if (!serviceEnabled) {
+      if (mounted) {
+        ModernFeedback.showError(context, 'Location services are disabled');
+      }
+      return;
+    }
 
     var perm = await Geolocator.checkPermission();
     if (perm == LocationPermission.denied) {
       perm = await Geolocator.requestPermission();
-      if (perm == LocationPermission.denied) return;
+      if (perm == LocationPermission.denied) {
+        if (mounted) {
+          ModernFeedback.showError(context, 'Location permission denied');
+        }
+        return;
+      }
     }
-    if (perm == LocationPermission.deniedForever) return;
+    if (perm == LocationPermission.deniedForever) {
+      if (mounted) {
+        ModernFeedback.showError(context, 'Location permission permanently denied');
+      }
+      return;
+    }
 
     _posSub = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
@@ -185,16 +206,13 @@ class _SurveyScreenState extends State<SurveyScreen> {
 
           _lastWrite = now;
           _lastWritePos = ll;
+          _pointCount++;
         }
       }
 
       if (mounted) setState(() {});
     });
   }
-
-
-
-
 
   double _cameraBearingDeg() {
     if (!_mapReady) return 0.0;
@@ -206,53 +224,53 @@ class _SurveyScreenState extends State<SurveyScreen> {
     } catch (_) {
       return 0.0; // controller not bound yet; be safe
     }
-}
-
+  }
 
   double _markerAngleRad() {
     final screenDeg = _normalizeDeg(_navHeading - _cameraBearingDeg() + 90.0);
     return screenDeg * math.pi / 180.0;
   }
 
-
-
-
-
-
   // ------- DB layers -------
   Future<void> _loadGrids() async {
-    final grids = await widget.database.listGrids(widget.projectId);
-    final dist = const Distance();
-    LatLng off(LatLng o, double meters, double brg) => dist.offset(o, meters, brg);
+    try {
+      final grids = await widget.database.listGrids(widget.projectId);
+      final dist = const Distance();
+      LatLng off(LatLng o, double meters, double brg) => dist.offset(o, meters, brg);
 
-    final List<Polyline> lines = [];
-    for (final g in grids) {
-      final center = LatLng(g.centerLat, g.centerLon);
-      final totalW = g.cols * g.cellSizeM;
-      final totalH = g.rows * g.cellSizeM;
+      final List<Polyline> lines = [];
+      for (final g in grids) {
+        final center = LatLng(g.centerLat, g.centerLon);
+        final totalW = g.cols * g.cellSizeM;
+        final totalH = g.rows * g.cellSizeM;
 
-      final topLeft = off(
-        off(center, -(totalH / 2), g.rotationDeg + 90),
-        -(totalW / 2),
-        g.rotationDeg,
-      );
+        final topLeft = off(
+          off(center, -(totalH / 2), g.rotationDeg + 90),
+          -(totalW / 2),
+          g.rotationDeg,
+        );
 
-      // verticals
-      for (int c = 0; c <= g.cols; c++) {
-        final s = off(topLeft, c * g.cellSizeM, g.rotationDeg);
-        final e = off(s, totalH, g.rotationDeg + 90);
-        lines.add(Polyline(points: [s, e], strokeWidth: 1.5, color: Colors.black54));
+        // verticals
+        for (int c = 0; c <= g.cols; c++) {
+          final s = off(topLeft, c * g.cellSizeM, g.rotationDeg);
+          final e = off(s, totalH, g.rotationDeg + 90);
+          lines.add(Polyline(points: [s, e], strokeWidth: 1.5, color: Colors.black54));
+        }
+        // horizontals
+        for (int r = 0; r <= g.rows; r++) {
+          final s = off(topLeft, r * g.cellSizeM, g.rotationDeg + 90);
+          final e = off(s, totalW, g.rotationDeg);
+          lines.add(Polyline(points: [s, e], strokeWidth: 1.5, color: Colors.black54));
+        }
       }
-      // horizontals
-      for (int r = 0; r <= g.rows; r++) {
-        final s = off(topLeft, r * g.cellSizeM, g.rotationDeg + 90);
-        final e = off(s, totalW, g.rotationDeg);
-        lines.add(Polyline(points: [s, e], strokeWidth: 1.5, color: Colors.black54));
+
+      if (!mounted) return;
+      setState(() => _gridLines = lines);
+    } catch (e) {
+      if (mounted) {
+        ModernFeedback.showError(context, 'Failed to load grids: $e');
       }
     }
-
-    if (!mounted) return;
-    setState(() => _gridLines = lines);
   }
 
   void _watchPoints() {
@@ -274,7 +292,10 @@ class _SurveyScreenState extends State<SurveyScreen> {
       }).toList();
 
       if (!mounted) return;
-      setState(() => _pointMarkers = markers);
+      setState(() {
+        _pointMarkers = markers;
+        _pointCount = rows.length;
+      });
     });
   }
 
@@ -335,57 +356,100 @@ class _SurveyScreenState extends State<SurveyScreen> {
     bool selDb = true;
     bool makeZip = false;
 
-    await showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (ctx) {
-        return Padding(
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.of(ctx).viewInsets.bottom,
-            left: 16, right: 16, top: 12,
-          ),
-          child: StatefulBuilder(
-            builder: (ctx, setM) {
-              return Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    height: 4, width: 44, margin: const EdgeInsets.only(bottom: 12),
-                    decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(2)),
-                  ),
-                  const Text('Export survey data', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 8),
-                  CheckboxListTile(value: selCsv, onChanged: (v) => setM(() => selCsv = v ?? false), title: const Text('CSV (points)'), dense: true),
-                  CheckboxListTile(value: selGeojson, onChanged: (v) => setM(() => selGeojson = v ?? false), title: const Text('GeoJSON (points + grids)'), dense: true),
-                  CheckboxListTile(value: selKml, onChanged: (v) => setM(() => selKml = v ?? false), title: const Text('KML (Google Earth)'), dense: true),
-                  CheckboxListTile(value: selWkt, onChanged: (v) => setM(() => selWkt = v ?? false), title: const Text('WKT CSV (Shapefile import)'), dense: true),
-                  const Divider(),
-                  CheckboxListTile(value: selDb, onChanged: (v) => setM(() => selDb = v ?? false), title: const Text('SQLite DB (geomag.db copy)'), dense: true),
-                  SwitchListTile(value: makeZip, onChanged: (v) => setM(() => makeZip = v), title: const Text('Package as .zip (if multiple)'), dense: true),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-                      const Spacer(),
-                      FilledButton.icon(
+    await ModernBottomSheet.show(
+      context,
+      title: 'Export Survey Data',
+      child: StatefulBuilder(
+        builder: (ctx, setM) {
+          return Padding(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
+              left: 16,
+              right: 16,
+              top: 8,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CheckboxListTile(
+                  value: selCsv,
+                  onChanged: (v) => setM(() => selCsv = v ?? false),
+                  title: const Text('CSV (points)'),
+                  subtitle: const Text('Comma-separated values format'),
+                  dense: true,
+                ),
+                CheckboxListTile(
+                  value: selGeojson,
+                  onChanged: (v) => setM(() => selGeojson = v ?? false),
+                  title: const Text('GeoJSON (points + grids)'),
+                  subtitle: const Text('Geographic JSON format'),
+                  dense: true,
+                ),
+                CheckboxListTile(
+                  value: selKml,
+                  onChanged: (v) => setM(() => selKml = v ?? false),
+                  title: const Text('KML (Google Earth)'),
+                  subtitle: const Text('Keyhole Markup Language'),
+                  dense: true,
+                ),
+                CheckboxListTile(
+                  value: selWkt,
+                  onChanged: (v) => setM(() => selWkt = v ?? false),
+                  title: const Text('WKT CSV (Shapefile import)'),
+                  subtitle: const Text('Well-Known Text format'),
+                  dense: true,
+                ),
+                const Divider(),
+                CheckboxListTile(
+                  value: selDb,
+                  onChanged: (v) => setM(() => selDb = v ?? false),
+                  title: const Text('SQLite DB (geomag.db copy)'),
+                  subtitle: const Text('Complete database backup'),
+                  dense: true,
+                ),
+                SwitchListTile(
+                  value: makeZip,
+                  onChanged: (v) => setM(() => makeZip = v),
+                  title: const Text('Package as .zip (if multiple)'),
+                  subtitle: const Text('Combine multiple files into archive'),
+                  dense: true,
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextButton(
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('Cancel'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 2,
+                      child: FilledButton.icon(
                         icon: const Icon(Icons.ios_share),
                         label: const Text('Export'),
                         onPressed: () async {
                           Navigator.pop(ctx);
                           await _performExport(
-                            csv: selCsv, geojson: selGeojson, kml: selKml, wkt: selWkt, db: selDb, zip: makeZip,
+                            csv: selCsv,
+                            geojson: selGeojson,
+                            kml: selKml,
+                            wkt: selWkt,
+                            db: selDb,
+                            zip: makeZip,
                           );
                         },
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                ],
-              );
-            },
-          ),
-        );
-      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -406,12 +470,16 @@ class _SurveyScreenState extends State<SurveyScreen> {
         if (db) ExportKind.sqliteDbCopy,
       ];
       if (kinds.isEmpty) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Select at least one format.')),
-        );
+        ModernFeedback.showWarning(context, 'Select at least one format.');
         return;
       }
+
+      // Show progress dialog
+      ModernProgressDialog.show(
+        context,
+        title: 'Exporting Data',
+        message: 'Preparing export files...',
+      );
 
       await _exporter.export(
         projectId: widget.projectId,
@@ -420,14 +488,12 @@ class _SurveyScreenState extends State<SurveyScreen> {
       );
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Export complete.')),
-      );
+      Navigator.of(context).pop(); // Close progress dialog
+      ModernFeedback.showSuccess(context, 'Export completed successfully');
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Export failed: $e')),
-      );
+      Navigator.of(context).pop(); // Close progress dialog
+      ModernFeedback.showError(context, 'Export failed: $e');
     }
   }
 
@@ -445,11 +511,60 @@ class _SurveyScreenState extends State<SurveyScreen> {
   // ------- UI -------
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    
     return Scaffold(
+      backgroundColor: theme.colorScheme.surface,
+      appBar: AppBar(
+        title: Text('Survey Project ${widget.projectId}'),
+        backgroundColor: theme.colorScheme.primary,
+        foregroundColor: theme.colorScheme.onPrimary,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.analytics),
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => DataAnalysisScreen(
+                    projectId: widget.projectId,
+                    database: widget.database,
+                  ),
+                ),
+              );
+            },
+            tooltip: 'View Analysis',
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () {
+              _showSettingsSheet();
+            },
+            tooltip: 'Settings',
+          ),
+        ],
+      ),
       body: Stack(
         children: [
           if (_pos == null)
-            const Center(child: CircularProgressIndicator())
+            Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  CircularProgressIndicator(
+                    color: theme.colorScheme.primary,
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Waiting for GPS location...',
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            )
           else
             FlutterMap(
               mapController: _map,
@@ -502,17 +617,21 @@ class _SurveyScreenState extends State<SurveyScreen> {
                             decoration: BoxDecoration(
                               color: Colors.white.withOpacity(0.92),
                               shape: BoxShape.circle,
-                              boxShadow: const [
+                              boxShadow: [
                                 BoxShadow(
                                   blurRadius: 6,
                                   spreadRadius: 1,
-                                  offset: Offset(0, 2),
-                                  color: Color(0x55000000),
+                                  offset: const Offset(0, 2),
+                                  color: Colors.black.withOpacity(0.3),
                                 ),
                               ],
                             ),
                             alignment: Alignment.center,
-                            child: const Icon(Icons.navigation, size: 30, color: Colors.indigo),
+                            child: Icon(
+                              Icons.navigation,
+                              size: 30,
+                              color: theme.colorScheme.primary,
+                            ),
                           ),
                         ),
                       ),
@@ -525,79 +644,55 @@ class _SurveyScreenState extends State<SurveyScreen> {
           Positioned(
             top: MediaQuery.of(context).padding.top + 12,
             left: 12,
-            child: _Legend(minV: 20, maxV: 70, title: 'Total Field (µT)'),
-          ),
-
-          // Controls (top-right)
-          Positioned(
-            top: MediaQuery.of(context).padding.top + 12,
-            right: 12,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                _ControlButton(
-                  icon: _useSatellite ? Icons.satellite_alt : Icons.map,
-                  label: _useSatellite ? 'Imagery' : 'Map',
-                  onTap: () => setState(() => _useSatellite = !_useSatellite),
-                ),
-                const SizedBox(height: 8),
-                _ControlButton(
-                  icon: _rotate ? Icons.explore : Icons.explore_off,
-                  label: _rotate ? 'Rotate On' : 'Rotate Off',
-                  onTap: () {
-                    setState(() => _rotate = !_rotate);
-                    if (_follow && _mapReady) _applyFollow();
-                  },
-                ),
-                const SizedBox(height: 8),
-                _ControlButton(
-                  icon: _follow ? Icons.my_location : Icons.location_disabled,
-                  label: _follow ? 'Following' : 'Free pan',
-                  onTap: () => setState(() => _follow = !_follow),
-                ),
-                const SizedBox(height: 8),
-                _ControlButton(
-                  icon: _activeSource == 'phone' ? Icons.phone_android : Icons.sensors,
-                  label: _activeSource == 'phone' ? 'Phone mag' : 'External',
-                  onTap: () async {
-                    setState(() {
-                      _activeSource = (_activeSource == 'phone') ? 'ble' : 'phone';
-                    });
-                    if (_activeSource == 'phone') {
-                      _phoneMag.start();
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Using phone magnetometer')),
-                        );
-                      }
-                    } else {
-                      await _phoneMag.stop();
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('External sensor mode (connect later)')),
-                        );
-                      }
-                    }
-                  },
-                ),
-              ],
+            child: _ModernLegend(
+              minV: 20,
+              maxV: 70,
+              title: 'Total Field (µT)',
+              theme: theme,
             ),
           ),
 
-          // Bottom-left: grid + export
+          // Status overlay (top-right)
+          Positioned(
+            top: MediaQuery.of(context).padding.top + 12,
+            right: 12,
+            child: _StatusOverlay(
+              theme: theme,
+              magneticData: _mag,
+              isRecording: _recording,
+              pointCount: _pointCount,
+              useSatellite: _useSatellite,
+              onToggleSatellite: () => setState(() => _useSatellite = !_useSatellite),
+              rotate: _rotate,
+              onToggleRotate: () {
+                setState(() => _rotate = !_rotate);
+                if (_follow && _mapReady) _applyFollow();
+              },
+              follow: _follow,
+              onToggleFollow: () => setState(() => _follow = !_follow),
+              activeSource: _activeSource,
+              onToggleSource: () => _toggleMagnetometerSource(),
+            ),
+          ),
+
+          // Bottom controls
           Positioned(
             left: 12,
             bottom: 16 + MediaQuery.of(context).padding.bottom,
             child: Row(
               children: [
-                FilledButton.tonal(
+                _ModernActionButton(
+                  icon: Icons.grid_on,
+                  label: 'New Grid',
                   onPressed: _showNewGridSheet,
-                  child: const Row(children: [Icon(Icons.grid_on), SizedBox(width: 8), Text('New Grid')]),
+                  theme: theme,
                 ),
                 const SizedBox(width: 8),
-                FilledButton.tonal(
+                _ModernActionButton(
+                  icon: Icons.ios_share,
+                  label: 'Export',
                   onPressed: _showExportSheet,
-                  child: const Row(children: [Icon(Icons.ios_share), SizedBox(width: 8), Text('Export')]),
+                  theme: theme,
                 ),
               ],
             ),
@@ -611,41 +706,24 @@ class _SurveyScreenState extends State<SurveyScreen> {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 if (!_follow)
-                  FloatingActionButton.extended(
-                    heroTag: 'recenter',
+                  _ModernFAB(
+                    icon: Icons.center_focus_strong,
+                    label: 'Recenter',
                     onPressed: () {
                       setState(() => _follow = true);
                       if (_mapReady) _applyFollow();
                     },
-                    icon: const Icon(Icons.center_focus_strong),
-                    label: const Text('Recenter'),
+                    theme: theme,
+                    heroTag: 'recenter',
                   ),
                 const SizedBox(height: 8),
-                FloatingActionButton.extended(
-                  heroTag: 'record',
+                _ModernFAB(
+                  icon: _recording ? Icons.stop : Icons.fiber_manual_record,
+                  label: _recording ? 'Stop' : 'Record',
+                  onPressed: _toggleRecording,
                   backgroundColor: _recording ? Colors.red : Colors.green,
-                  onPressed: () async {
-                    setState(() => _recording = !_recording);
-                    if (_recording) {
-                      _lastWrite = null;
-                      _lastWritePos = null;
-                      await WakelockPlus.enable(); // keep screen awake
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Recording started')),
-                        );
-                      }
-                    } else {
-                      await WakelockPlus.disable();
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Recording stopped')),
-                        );
-                      }
-                    }
-                  },
-                  icon: Icon(_recording ? Icons.stop : Icons.fiber_manual_record),
-                  label: Text(_recording ? 'Stop' : 'Record'),
+                  theme: theme,
+                  heroTag: 'record',
                 ),
               ],
             ),
@@ -659,7 +737,9 @@ class _SurveyScreenState extends State<SurveyScreen> {
               opacity: 0.6,
               child: Text(
                 _useSatellite ? 'Imagery © Esri' : '© OpenStreetMap contributors',
-                style: const TextStyle(fontSize: 12),
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
             ),
           ),
@@ -668,140 +748,445 @@ class _SurveyScreenState extends State<SurveyScreen> {
     );
   }
 
+  Future<void> _toggleRecording() async {
+    setState(() => _recording = !_recording);
+    
+    if (_recording) {
+      _lastWrite = null;
+      _lastWritePos = null;
+      await WakelockPlus.enable(); // keep screen awake
+      ModernFeedback.showSuccess(context, 'Recording started');
+    } else {
+      await WakelockPlus.disable();
+      ModernFeedback.showInfo(context, 'Recording stopped - $_pointCount points collected');
+    }
+  }
+
+  Future<void> _toggleMagnetometerSource() async {
+    setState(() {
+      _activeSource = (_activeSource == 'phone') ? 'ble' : 'phone';
+    });
+    
+    if (_activeSource == 'phone') {
+      _phoneMag.start();
+      ModernFeedback.showInfo(context, 'Using phone magnetometer');
+    } else {
+      await _phoneMag.stop();
+      ModernFeedback.showWarning(context, 'External sensor mode (connect BLE device)');
+    }
+  }
+
+  Future<void> _showSettingsSheet() async {
+    await ModernBottomSheet.show(
+      context,
+      title: 'Survey Settings',
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SwitchListTile(
+              title: const Text('Auto Heading'),
+              subtitle: const Text('Use GPS course when moving, compass when stationary'),
+              value: _autoHeading,
+              onChanged: (v) => setState(() => _autoHeading = v),
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.info_outline),
+              title: const Text('About Survey Settings'),
+              subtitle: const Text('Configure data collection parameters'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () {
+                Navigator.pop(context);
+                _showInfoDialog();
+              },
+            ),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showInfoDialog() {
+    ModernDialog.show(
+      context,
+      title: 'Survey Information',
+      message: 'This geomagnetic survey tool collects magnetic field measurements with GPS coordinates. Data is automatically filtered for accuracy and spacing.',
+      icon: Icons.info,
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Got it'),
+        ),
+      ],
+    );
+  }
+
   // ------- New grid sheet -------
   Future<void> _showNewGridSheet() async {
-    final name = TextEditingController(text: 'Grid');
+    final name = TextEditingController(text: 'Grid ${DateTime.now().millisecondsSinceEpoch % 1000}');
     final rows = TextEditingController(text: '10');
     final cols = TextEditingController(text: '10');
     final cell = TextEditingController(text: '25');
     final rot = TextEditingController(text: '0');
 
-    await showModalBottomSheet(
-      context: context,
+    await ModernBottomSheet.show(
+      context,
+      title: 'Create Survey Grid',
       isScrollControlled: true,
-      builder: (ctx) {
-        return Padding(
-          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
-          child: ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              const Text('New Survey Grid', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 8),
-              TextField(controller: name, decoration: const InputDecoration(labelText: 'Name')),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: rows,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'Rows'),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(
-                      controller: cols,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'Cols'),
-                    ),
-                  ),
-                ],
+      child: Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+          left: 16,
+          right: 16,
+          top: 8,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: name,
+              decoration: const InputDecoration(
+                labelText: 'Grid Name',
+                prefixIcon: Icon(Icons.label_outline),
               ),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: cell,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'Cell size (m)'),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: rows,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Rows',
+                      prefixIcon: Icon(Icons.table_rows),
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(
-                      controller: rot,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(labelText: 'Rotation (deg)'),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: TextField(
+                    controller: cols,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Columns',
+                      prefixIcon: Icon(Icons.view_column),
                     ),
                   ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: cell,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Cell size (m)',
+                      prefixIcon: Icon(Icons.straighten),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: TextField(
+                    controller: rot,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Rotation (deg)',
+                      prefixIcon: Icon(Icons.rotate_right),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
                 icon: const Icon(Icons.grid_on),
-                label: const Text('Create'),
+                label: const Text('Create Grid'),
                 onPressed: () async {
+                  final gridName = name.text.trim().isEmpty ? 'Grid' : name.text.trim();
                   final c = _pos ?? const LatLng(0, 0);
-                  await widget.database.createGrid(
-                    projectId: widget.projectId,
-                    name: name.text.trim().isEmpty ? 'Grid' : name.text.trim(),
-                    centerLat: c.latitude,
-                    centerLon: c.longitude,
-                    rows: int.tryParse(rows.text) ?? 10,
-                    cols: int.tryParse(cols.text) ?? 10,
-                    cellSizeM: double.tryParse(cell.text) ?? 25,
-                    rotationDeg: double.tryParse(rot.text) ?? 0,
-                  );
-                  if (!mounted) return;
-                  Navigator.pop(ctx);
-                  await _loadGrids();
+                  
+                  try {
+                    await widget.database.createGrid(
+                      projectId: widget.projectId,
+                      name: gridName,
+                      centerLat: c.latitude,
+                      centerLon: c.longitude,
+                      rows: int.tryParse(rows.text) ?? 10,
+                      cols: int.tryParse(cols.text) ?? 10,
+                      cellSizeM: double.tryParse(cell.text) ?? 25,
+                      rotationDeg: double.tryParse(rot.text) ?? 0,
+                    );
+                    
+                    if (!mounted) return;
+                    Navigator.pop(context);
+                    await _loadGrids();
+                    ModernFeedback.showSuccess(context, 'Grid "$gridName" created');
+                  } catch (e) {
+                    if (!mounted) return;
+                    ModernFeedback.showError(context, 'Failed to create grid: $e');
+                  }
                 },
+                style: FilledButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                ),
               ),
-            ],
-          ),
-        );
-      },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
     );
   }
 }
 
-// ---------- Small UI helpers (legend + buttons) ----------
+// ---------- Modern UI Components ----------
 
-class _Legend extends StatelessWidget {
+class _ModernLegend extends StatelessWidget {
   final double minV;
   final double maxV;
   final String title;
-  const _Legend({required this.minV, required this.maxV, required this.title});
+  final ThemeData theme;
+
+  const _ModernLegend({
+    required this.minV,
+    required this.maxV,
+    required this.title,
+    required this.theme,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      elevation: 2,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-                const SizedBox(height: 6),
-                SizedBox(
-                  width: 120, height: 10,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(colors: [
-                        Color(0xFF2B6CB0), // blue
-                        Color(0xFFE53E3E), // red
-                      ]),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    Text('${minV.toStringAsFixed(0)}'),
-                    const SizedBox(width: 96),
-                    Text('${maxV.toStringAsFixed(0)}'),
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.85),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.2)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.3),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w600,
+              fontSize: 14,
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: 120,
+            height: 12,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [
+                    Color(0xFF3B82F6), // blue
+                    Color(0xFF10B981), // green  
+                    Color(0xFFF59E0B), // yellow
+                    Color(0xFFEF4444), // red
                   ],
+                ),
+                borderRadius: BorderRadius.circular(6),
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '${minV.toStringAsFixed(0)}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              Text(
+                '${maxV.toStringAsFixed(0)}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusOverlay extends StatelessWidget {
+  final ThemeData theme;
+  final MagVector? magneticData;
+  final bool isRecording;
+  final int pointCount;
+  final bool useSatellite;
+  final VoidCallback onToggleSatellite;
+  final bool rotate;
+  final VoidCallback onToggleRotate;
+  final bool follow;
+  final VoidCallback onToggleFollow;
+  final String activeSource;
+  final VoidCallback onToggleSource;
+
+  const _StatusOverlay({
+    required this.theme,
+    this.magneticData,
+    required this.isRecording,
+    required this.pointCount,
+    required this.useSatellite,
+    required this.onToggleSatellite,
+    required this.rotate,
+    required this.onToggleRotate,
+    required this.follow,
+    required this.onToggleFollow,
+    required this.activeSource,
+    required this.onToggleSource,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        // Recording status
+        if (isRecording)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Colors.red, Colors.red.withOpacity(0.8)],
+              ),
+              borderRadius: BorderRadius.circular(20),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.red.withOpacity(0.4),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
                 ),
               ],
             ),
-          ],
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: const BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'REC $pointCount',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        
+        const SizedBox(height: 8),
+        
+        // Control buttons
+        _ControlButton(
+          icon: useSatellite ? Icons.satellite_alt : Icons.map,
+          label: useSatellite ? 'Imagery' : 'Map',
+          onTap: onToggleSatellite,
+          theme: theme,
         ),
-      ),
+        const SizedBox(height: 8),
+        _ControlButton(
+          icon: rotate ? Icons.explore : Icons.explore_off,
+          label: rotate ? 'Rotate On' : 'Rotate Off',
+          onTap: onToggleRotate,
+          theme: theme,
+        ),
+        const SizedBox(height: 8),
+        _ControlButton(
+          icon: follow ? Icons.my_location : Icons.location_disabled,
+          label: follow ? 'Following' : 'Free pan',
+          onTap: onToggleFollow,
+          theme: theme,
+        ),
+        const SizedBox(height: 8),
+        _ControlButton(
+          icon: activeSource == 'phone' ? Icons.phone_android : Icons.sensors,
+          label: activeSource == 'phone' ? 'Phone' : 'External',
+          onTap: onToggleSource,
+          theme: theme,
+        ),
+        
+        const SizedBox(height: 16),
+        
+        // Magnetic field display
+        if (magneticData != null)
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.85),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.white.withOpacity(0.2)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Magnetic Field',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '${magneticData!.mag.toStringAsFixed(1)} µT',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'X:${magneticData!.x.toStringAsFixed(1)} Y:${magneticData!.y.toStringAsFixed(1)} Z:${magneticData!.z.toStringAsFixed(1)}',
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.8),
+                    fontSize: 10,
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 }
@@ -810,15 +1195,180 @@ class _ControlButton extends StatelessWidget {
   final IconData icon;
   final String label;
   final VoidCallback onTap;
-  const _ControlButton({required this.icon, required this.label, required this.onTap});
+  final ThemeData theme;
+
+  const _ControlButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    required this.theme,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return FilledButton.tonalIcon(
-      style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8)),
-      onPressed: onTap,
-      icon: Icon(icon, size: 18),
-      label: Text(label),
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.85),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withOpacity(0.2)),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 18, color: Colors.white),
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ModernActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+  final ThemeData theme;
+
+  const _ModernActionButton({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    required this.theme,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            theme.colorScheme.primaryContainer,
+            theme.colorScheme.primaryContainer.withOpacity(0.8),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: theme.colorScheme.primary.withOpacity(0.2),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  icon,
+                  color: theme.colorScheme.onPrimaryContainer,
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: theme.colorScheme.onPrimaryContainer,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ModernFAB extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onPressed;
+  final Color? backgroundColor;
+  final ThemeData theme;
+  final String heroTag;
+
+  const _ModernFAB({
+    required this.icon,
+    required this.label,
+    required this.onPressed,
+    this.backgroundColor,
+    required this.theme,
+    required this.heroTag,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final bgColor = backgroundColor ?? theme.colorScheme.primary;
+    
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [bgColor, bgColor.withOpacity(0.9)],
+        ),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: bgColor.withOpacity(0.4),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(16),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, color: Colors.white, size: 20),
+                const SizedBox(width: 8),
+                Text(
+                  label,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
