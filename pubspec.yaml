@@ -1,0 +1,38 @@
+name: nav_app
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_map: ^8.2.1
+  latlong2: ^0.9.1
+  geolocator: ^13.0.1
+  flutter_compass: ^0.8.0
+  sensors_plus: ^6.0.1
+  path_provider: ^2.1.4
+  share_plus: ^10.0.2
+  # Persistence
+  drift: ^2.18.0
+  drift_flutter: ^0.2.0
+  sqlite3_flutter_libs: ^0.5.24
+  # BLE (placeholder service)
+  flutter_reactive_ble: ^5.3.1
+  cupertino_icons: ^1.0.8
+  archive: ^3.6.1
+  wakelock_plus: ^1.1.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  build_runner: ^2.4.11
+  drift_dev: ^2.18.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/
