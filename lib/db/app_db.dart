@@ -79,7 +79,22 @@ class AppDb extends _$AppDb {
   // ----------------- PROJECTS -----------------
   Future<int> createProject(String name) =>
       into(projects).insert(ProjectsCompanion.insert(name: name));
+      
   Future<List<Project>> listProjects() => select(projects).get();
+
+  // FIXED: Proper transaction implementation for deleteProject
+  Future<void> deleteProject(int projectId) async {
+    await transaction(() async {
+      // Delete all points for this project first
+      await (delete(points)..where((p) => p.projectId.equals(projectId))).go();
+      
+      // Delete all grids for this project
+      await (delete(grids)..where((g) => g.projectId.equals(projectId))).go();
+      
+      // Finally delete the project itself
+      await (delete(projects)..where((p) => p.id.equals(projectId))).go();
+    });
+  }
 
   // ------------------ GRIDS -------------------
   Future<int> createGrid({
